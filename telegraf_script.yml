@@ -1,0 +1,93 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telegraf-config          # ← Match this name if you rename the ConfigMap
+  namespace: monitoring          # ← Same namespace you used for InfluxDB
+data:
+  telegraf.conf: |
+    [[inputs.kubernetes]]
+      bearer_token = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    [[inputs.kube_inventory]]
+    [[outputs.influxdb_v2]]
+      # Change this URL if your InfluxDB service DNS, namespace or port differ
+      urls = ["http://influxdb.monitoring.svc.cluster.local:8086"]
+      # These come from the influxdb-info Secret (see your InfluxDB YAML)
+      token        = "${INFLUX_TOKEN}"    # ← Must match Secret key `token`
+      organization = "${INFLUX_ORG}"      # ← Must match Secret key `org`
+      bucket       = "${INFLUX_BUCKET}"   # ← Must match Secret key `bucket`
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: telegraf                 # ← You can rename this, but update references below
+  namespace: monitoring          # ← Same as above
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: telegraf-monitoring      # ← Rename to follow your naming conventions
+subjects:
+  - kind: ServiceAccount
+    name: telegraf               # ← Must match the ServiceAccount name
+    namespace: monitoring        # ← Must match the ServiceAccount’s namespace
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin            # ← Consider replacing with a less‑privileged role in prod
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: telegraf                 # ← Rename if desired
+  namespace: monitoring          # ← Same namespace
+  labels:
+    app: telegraf                # ← Keep labels/selectors in sync
+spec:
+  selector:
+    matchLabels:
+      app: telegraf
+  template:
+    metadata:
+      labels:
+        app: telegraf
+    spec:
+      serviceAccountName: telegraf  # ← Must match your ServiceAccount
+      containers:
+        - name: telegraf
+          # Pin to a version you’ve tested (e.g. 1.34, 1.35, etc.)
+          image: influxdata/telegraf:1.34   # ← Update to your desired Telegraf tag
+          env:
+            - name: INFLUX_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-info       # ← Must match your InfluxDB Secret name
+                  key: token
+            - name: INFLUX_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-info
+                  key: org
+            - name: INFLUX_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: influxdb-info
+                  key: bucket
+          volumeMounts:
+            - name: config
+              mountPath: /etc/telegraf/telegraf.conf
+              subPath: telegraf.conf
+          # Uncomment below to define CPU/memory limits if needed:
+          # These values should be adjusted based on your environment's capacity.
+          # For example, increase if running on larger nodes, decrease for lightweight agents.
+          # resources:
+          #   limits:
+          #     cpu: "500m"       # ← Max 0.5 CPU cores allowed (change based on available CPU)
+          #     memory: "256Mi"   # ← Max 256 MiB memory (adjust based on RAM availability)
+          #   requests:
+          #     cpu: "250m"       # ← Guaranteed 0.25 CPU cores reserved (tweak per workload need)
+          #     memory: "128Mi"   # ← Guaranteed 128 MiB memory (update based on usage patterns)
+      volumes:
+        - name: config
+          configMap:
+            name: telegraf-config   # ← Must match the ConfigMap name above
